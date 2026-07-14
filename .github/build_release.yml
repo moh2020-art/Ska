@@ -1,0 +1,77 @@
+name: بناء تطبيق أندرويد موقّع (Release)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: تنزيل المستودع
+        uses: actions/checkout@v4
+
+      - name: استخراج المشروع من smart_kids_academy.zip
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y unzip
+          unzip -o smart_kids_academy.zip -d extracted_temp
+          shopt -s dotglob
+          cp -r extracted_temp/smart_kids_academy/* .
+          rm -rf extracted_temp
+
+      - name: تثبيت Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: توليد مجلد android
+        run: flutter create --platforms=android --org com.smartkids .
+
+      - name: تثبيت الحزم
+        run: flutter pub get
+
+      - name: إعادة بناء ملف مفتاح التوقيع من الأسرار السرية (Secrets)
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
+          cat > android/key.properties << EOF
+          storePassword=${{ secrets.STORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=upload-keystore.jks
+          EOF
+
+      - name: إضافة إعدادات التوقيع لملف build.gradle
+        run: |
+          GRADLE_FILE="android/app/build.gradle"
+          sed -i '1i\
+          def keystoreProperties = new Properties()\
+          def keystorePropertiesFile = rootProject.file("key.properties")\
+          if (keystorePropertiesFile.exists()) {\
+              keystoreProperties.load(new FileInputStream(keystorePropertiesFile))\
+          }' "$GRADLE_FILE"
+
+          sed -i '/^android {/a\
+          signingConfigs {\
+              release {\
+                  keyAlias keystoreProperties["keyAlias"]\
+                  keyPassword keystoreProperties["keyPassword"]\
+                  storeFile keystoreProperties["storeFile"] ? file(keystoreProperties["storeFile"]) : null\
+                  storePassword keystoreProperties["storePassword"]\
+              }\
+          }' "$GRADLE_FILE"
+
+          sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.release/' "$GRADLE_FILE"
+
+      - name: بناء ملف AAB الموقّع (جاهز لمتجر Google Play)
+        run: flutter build appbundle --release
+
+      - name: بناء ملف APK الموقّع (لتثبيت مباشر على الهاتف للاختبار)
+        run: flutter build apk --release
+
+      - name: رفع ملفي AAB وAPK كمخرجات
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-kids-academy-release
+          path: |
+            build/app/outputs/bundle/release/app-release.aab
+            build/app/outputs/flutter-apk/app-release.apk
